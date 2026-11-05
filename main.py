@@ -7,6 +7,15 @@
     # 水系专项高保真走向贴合提取与 QGIS 矢量导出
     python main.py --source data/SDC30_V003_50SMF_20210618.tif --target water
 
+    # 交通大动脉专项提取 (方案 B 极严断舍离，0 发夹回路)
+    python main.py --source data/SDC30_V003_50SMF_20210618.tif --target road
+
+    # 稠密森林林地专项提取 (EVI/NDVI/SAVI 多指数协同抗饱和)
+    python main.py --source data/SDC30_V003_50SMF_20210618.tif --target forest
+
+    # 农田耕地专项提取 (SAVI土壤校正与麦田垄沟微孔抑制)
+    python main.py --source data/SDC30_V003_50SMF_20210618.tif --target cropland
+
     # 自定义遥感影像解译
     python main.py --source data/sample_rs.tif --output outputs/
 """
@@ -25,6 +34,7 @@ if sys.platform == "win32":
 from yolo_detector import RemoteSensingDetector
 from rs_exporter import RemoteSensingExporter
 from rs_segformer_engine import IndustrialSegFormerEngine, MultispectralSegFormerEngine, run_segformer_pipeline
+from landuse_category import WaterExtractor, ForestExtractor, CroplandExtractor, RoadExtractor
 
 
 def parse_args():
@@ -102,6 +112,54 @@ def process_image(img_path: Path, detector: RemoteSensingDetector, exporter: Rem
         print(f"  4. 道路属性统计表 (CSV): {artifacts['csv']}")
         print(f"  5. 路网解译分析报告: {artifacts['report']}")
         return r_res
+
+    # 特别处理：森林林地专项提取引擎
+    if args.target and args.target.strip().lower() in ["forest", "forests", "森林", "林地", "树木"]:
+        print(f"\n[*] 启动森林林地专项提取引擎 (多指数协同+抗饱和+排除水体)...")
+        f_engine = IndustrialSegFormerEngine()
+        f_res = f_engine.extract_forest(str(img_path), min_area_pixels=80)
+        f_summary = f_res["summary"]
+        
+        print("\n------------------ 森林解译结果统计 ------------------")
+        print(f"[*] 提取森林斑块总数: {f_summary['total_forest_patches']} 处")
+        print(f"[*] 全区森林总面积: {f_summary['total_forest_km2']} km² (约 {f_summary['total_forest_km2']*100:.1f} 公顷)")
+        print(f"[*] 地表森林覆盖率: {f_summary['forest_coverage_ratio_pct']} %")
+        print(f"[*] 算法耗时: {f_summary['inference_time_ms']} ms")
+        print("------------------------------------------------------")
+        
+        stem = f"{img_path.stem}_forest"
+        artifacts = f_engine.export_all_forest_results(f_res, output_dir=args.output, prefix=stem)
+        print("\n[OK] 森林专属解译成果已全部导出:")
+        print(f"  1. 森林渲染标注图: {artifacts['annotated_image']}")
+        print(f"  2. 二值森林掩膜 (Mask): {artifacts['forest_mask']}")
+        print(f"  3. 森林空间矢量 (GeoJSON): {artifacts['geojson']}")
+        print(f"  4. 森林斑块属性表 (CSV): {artifacts['csv']}")
+        print(f"  5. 森林资源分析报告: {artifacts['report']}")
+        return f_res
+
+    # 特别处理：农田耕地专项提取引擎
+    if args.target and args.target.strip().lower() in ["cropland", "crop", "farm", "farmland", "农田", "耕地"]:
+        print(f"\n[*] 启动农田耕地专项提取引擎 (SAVI土壤校正+5x5垄沟闭运算+森林水系硬互斥)...")
+        c_engine = IndustrialSegFormerEngine()
+        c_res = c_engine.extract_cropland(str(img_path), min_area_pixels=120)
+        c_summary = c_res["summary"]
+        
+        print("\n------------------ 农田解译结果统计 ------------------")
+        print(f"[*] 提取耕地斑块总数: {c_summary['total_cropland_patches']} 处")
+        print(f"[*] 全区农田总面积: {c_summary['total_cropland_km2']} km² (约 {c_summary['total_cropland_km2']*100:.1f} 公顷)")
+        print(f"[*] 地表耕地覆盖率: {c_summary['cropland_coverage_ratio_pct']} %")
+        print(f"[*] 算法耗时: {c_summary['inference_time_ms']} ms")
+        print("------------------------------------------------------")
+        
+        stem = f"{img_path.stem}_cropland"
+        artifacts = c_engine.export_all_cropland_results(c_res, output_dir=args.output, prefix=stem)
+        print("\n[OK] 农田专属解译成果已全部导出:")
+        print(f"  1. 农田渲染标注图: {artifacts['annotated_image']}")
+        print(f"  2. 二值农田掩膜 (Mask): {artifacts['cropland_mask']}")
+        print(f"  3. 农田空间矢量 (GeoJSON): {artifacts['geojson']}")
+        print(f"  4. 农田斑块属性表 (CSV): {artifacts['csv']}")
+        print(f"  5. 农田分析报告: {artifacts['report']}")
+        return c_res
 
     # 2. 执行常规目标推理 (切片滑窗 或 整图直推)
     if args.target:

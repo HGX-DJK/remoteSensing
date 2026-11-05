@@ -174,6 +174,136 @@ async def detect_remote_sensing(
                 }
             }
 
+        # 如果用户指定提取森林 (启动森林林地专项引擎)
+        if target_cls in ["forest", "forests", "森林", "林地", "树木"]:
+            f_engine = IndustrialSegFormerEngine()
+            f_res = f_engine.extract_forest(str(file_path), min_area_pixels=80)
+            stem = f"forest_{req_id}"
+            art_paths = f_engine.export_all_forest_results(f_res, output_dir=str(OUTPUT_DIR), prefix=stem)
+            
+            det_items = []
+            transform = f_res["geo_meta"].get("transform") if f_res["geo_meta"] else None
+            inv_t = ~transform if transform else None
+            for ff in f_res["forest_features"]:
+                p = ff["properties"]
+                coords = ff["geometry"]["coordinates"][0]
+                if inv_t:
+                    pts_px = [list(inv_t * (pt[0], pt[1])) for pt in coords]
+                    cpx, cpy = inv_t * (p["center_utm"][0], p["center_utm"][1])
+                else:
+                    pts_px = coords
+                    cpx, cpy = p["center_utm"][0], p["center_utm"][1]
+                pts_arr = np.array(pts_px)
+                xmin, ymin = np.min(pts_arr, axis=0)
+                xmax, ymax = np.max(pts_arr, axis=0)
+                det_items.append({
+                    "id": p["id"],
+                    "class_name": "forest",
+                    "class_name_zh": f"森林({p.get('subtype', '稠密林地')})",
+                    "confidence": 0.98,
+                    "color": [34, 139, 34],
+                    "bbox": [int(xmin), int(ymin), int(xmax), int(ymax)],
+                    "center_pixel": [round(cpx, 2), round(cpy, 2)],
+                    "center_geo": p["center_utm"],
+                    "area_km2": p["area_km2"]
+                })
+            
+            summary_info = {
+                "total_objects": f_res["summary"]["total_forest_patches"],
+                "class_counts": {"森林林地": f_res["summary"]["total_forest_patches"]},
+                "class_areas_pixel": {"森林林地": f_res["summary"]["total_forest_pixels"]},
+                "class_area_percentages": {"森林林地": f_res["summary"]["forest_coverage_ratio_pct"]},
+                "inference_time_ms": f_res["summary"]["inference_time_ms"]
+            }
+
+            return {
+                "success": True,
+                "request_id": req_id,
+                "image_info": {
+                    "filename": file_path.name,
+                    "width": f_res["image_shape"][1],
+                    "height": f_res["image_shape"][0],
+                    "channels": f_res["image_shape"][2],
+                    "has_georeference": f_res["geo_meta"] is not None,
+                    "crs": f_res["geo_meta"].get("crs") if f_res["geo_meta"] else None
+                },
+                "summary": summary_info,
+                "detections": det_items,
+                "artifacts": {
+                    "annotated_image": f"/outputs/{Path(art_paths['annotated_image']).name}",
+                    "geojson": f"/outputs/{Path(art_paths['geojson']).name}",
+                    "json": f"/outputs/{Path(art_paths['geojson']).name}",
+                    "csv": f"/outputs/{Path(art_paths['csv']).name}",
+                    "chart": f"/outputs/{Path(art_paths['annotated_image']).name}",
+                    "report": f"/outputs/{Path(art_paths['report']).name}"
+                }
+            }
+
+        # 如果用户指定提取农田耕地 (启动农田耕地专项引擎)
+        if target_cls in ["cropland", "crop", "farm", "farmland", "农田", "耕地"]:
+            c_engine = IndustrialSegFormerEngine()
+            c_res = c_engine.extract_cropland(str(file_path), min_area_pixels=120)
+            stem = f"cropland_{req_id}"
+            art_paths = c_engine.export_all_cropland_results(c_res, output_dir=str(OUTPUT_DIR), prefix=stem)
+            
+            det_items = []
+            transform = c_res["geo_meta"].get("transform") if c_res["geo_meta"] else None
+            inv_t = ~transform if transform else None
+            for cf in c_res["cropland_features"]:
+                p = cf["properties"]
+                coords = cf["geometry"]["coordinates"][0]
+                if inv_t:
+                    pts_px = [list(inv_t * (pt[0], pt[1])) for pt in coords]
+                    cpx, cpy = inv_t * (p["center_utm"][0], p["center_utm"][1])
+                else:
+                    pts_px = coords
+                    cpx, cpy = p["center_utm"][0], p["center_utm"][1]
+                pts_arr = np.array(pts_px)
+                xmin, ymin = np.min(pts_arr, axis=0)
+                xmax, ymax = np.max(pts_arr, axis=0)
+                det_items.append({
+                    "id": p["id"],
+                    "class_name": "cropland",
+                    "class_name_zh": f"农田({p.get('subtype', '耕地')})",
+                    "confidence": 0.98,
+                    "color": [135, 195, 75],
+                    "bbox": [int(xmin), int(ymin), int(xmax), int(ymax)],
+                    "center_pixel": [round(cpx, 2), round(cpy, 2)],
+                    "center_geo": p["center_utm"],
+                    "area_km2": p["area_km2"]
+                })
+            
+            summary_info = {
+                "total_objects": c_res["summary"]["total_cropland_patches"],
+                "class_counts": {"农田耕地": c_res["summary"]["total_cropland_patches"]},
+                "class_areas_pixel": {"农田耕地": c_res["summary"]["total_cropland_pixels"]},
+                "class_area_percentages": {"农田耕地": c_res["summary"]["cropland_coverage_ratio_pct"]},
+                "inference_time_ms": c_res["summary"]["inference_time_ms"]
+            }
+
+            return {
+                "success": True,
+                "request_id": req_id,
+                "image_info": {
+                    "filename": file_path.name,
+                    "width": c_res["image_shape"][1],
+                    "height": c_res["image_shape"][0],
+                    "channels": c_res["image_shape"][2],
+                    "has_georeference": c_res["geo_meta"] is not None,
+                    "crs": c_res["geo_meta"].get("crs") if c_res["geo_meta"] else None
+                },
+                "summary": summary_info,
+                "detections": det_items,
+                "artifacts": {
+                    "annotated_image": f"/outputs/{Path(art_paths['annotated_image']).name}",
+                    "geojson": f"/outputs/{Path(art_paths['geojson']).name}",
+                    "json": f"/outputs/{Path(art_paths['geojson']).name}",
+                    "csv": f"/outputs/{Path(art_paths['csv']).name}",
+                    "chart": f"/outputs/{Path(art_paths['annotated_image']).name}",
+                    "report": f"/outputs/{Path(art_paths['report']).name}"
+                }
+            }
+
         # 如果用户指定提取路网 (启动主干路网专项引擎)
         if target_cls in ["road", "roads", "道路", "路网", "公路"]:
             r_engine = IndustrialSegFormerEngine()

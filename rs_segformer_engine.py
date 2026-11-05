@@ -27,6 +27,17 @@ from typing import Dict, List, Tuple, Optional, Any
 
 import torch
 
+# 导入 landuse_category 地物分类专用模块
+from landuse_category import (
+    WaterExtractor,
+    ForestExtractor,
+    CroplandExtractor,
+    RoadExtractor,
+    vectorize_polygons_with_holes,
+    chaikin_smooth,
+    pts_to_geo_coords
+)
+
 # 设置绘图缓存
 import tempfile
 os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "matplotlib_cache"))
@@ -324,74 +335,31 @@ class IndustrialSegFormerEngine:
         h, w = mndwi.shape
         print(f"[*] 卫星影像尺寸: {w}x{h} (覆盖约 110km x 110km)，启动河道真走向贴合与完全互斥解译...")
 
-        # ----------------- 1. 水系精细化提取 (Water System - 严格保真河道弯曲) -----------------
-        print("[*] 阶段 1/3: 水系高保真自适应提取与亚像元轮廓保持...")
-        nir_p55 = np.percentile(nir[::8, ::8], 55)
-        raw_water = (mndwi > 0.06) & (nir < nir_p55) & (ndvi < 0.12)
-        
-        # 轻微 3x3 高斯滤波，既平滑边缘又不破坏细微河湾走向
-        water_float = cv2.GaussianBlur(raw_water.astype(np.float32), (3, 3), 0.8)
-        water_binary = (water_float >= 0.45).astype(np.uint8)
+        # ----------------- 1. 水系精细化提取 (WaterExtractor) -----------------
+        w_res = WaterExtractor(min_area_pixels=50).extract(tif_path)
+        clean_water = w_res["clean_water"]
 
-        # 极速 LUT 过滤 < 50 像元 (~4.5公顷) 的零星坑洼
-        num_w, labels_w, stats_w, _ = cv2.connectedComponentsWithStats(water_binary, connectivity=8)
-        lut_w = np.zeros(num_w, dtype=np.uint8)
-        lut_w[stats_w[:, cv2.CC_STAT_AREA] >= 50] = 1
-        lut_w[0] = 0
-        clean_water = lut_w[labels_w]
+        # ----------------- 2. 植被生态层次解译 (ForestExtractor & CroplandExtractor) -----------------
+        f_res = ForestExtractor(min_area_pixels=80).extract(tif_path, water_mask=clean_water)
+        clean_forest = f_res["clean_forest"]
 
-        # 填补湖库水面内部假麻点孔洞
-        cnts_w, _ = cv2.findContours(clean_water, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(clean_water, cnts_w, -1, 1, -1)
-
-        print(f"[+] 水系提取完成: 保留 {np.sum(lut_w)} 处连贯水体与河段，严格契合底图河道真实走势！")
-
-        # ----------------- 2. 植被生态层次精细化解译 (完全互斥，绝无重叠) -----------------
-        print("[*] 阶段 2/3: 植被分级生态解译 (稠密森林与农田耕地绝对互斥)...")
-        # (1) 稠密森林/林地: 高 NDVI 且高 EVI 且高 SAVI 且低 NDBI 且严格排除水体
-        raw_forest = (ndvi >= 0.50) & (evi >= 0.95) & (savi >= 0.60) & (ndbi < -0.08) & (clean_water == 0)
-        num_f, labels_f, stats_f, _ = cv2.connectedComponentsWithStats(raw_forest.astype(np.uint8), connectivity=8)
-        lut_f = np.zeros(num_f, dtype=np.uint8)
-        lut_f[stats_f[:, cv2.CC_STAT_AREA] >= 80] = 1  # 过滤小于 80 像素 (~7.2公顷) 孤立林木
-        lut_f[0] = 0
-        clean_forest = lut_f[labels_f]
-
-        # (2) 耕地/农田草地: 中度 NDVI/SAVI, 严格互斥排除森林 (clean_forest == 0) 与水体 (clean_water == 0)
-        raw_crop = ((ndvi >= 0.36) | (savi >= 0.40)) & (clean_forest == 0) & (clean_water == 0) & (ndbi < -0.02)
-        num_c, labels_c, stats_c, _ = cv2.connectedComponentsWithStats(raw_crop.astype(np.uint8), connectivity=8)
-        lut_c = np.zeros(num_c, dtype=np.uint8)
-        lut_c[stats_c[:, cv2.CC_STAT_AREA] >= 120] = 1 # 过滤小于 120 像素 (~10.8公顷) 零星杂草
-        lut_c[0] = 0
-        clean_crop = lut_c[labels_c]
-        clean_crop = cv2.morphologyEx(clean_crop, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
-
-        # 再次强制确保互斥性校验
-        clean_crop[clean_forest > 0] = 0
-        clean_crop[clean_water > 0] = 0
-        clean_forest[clean_water > 0] = 0
+        c_res = CroplandExtractor(min_area_pixels=120).extract(
+            tif_path, clean_forest=clean_forest, clean_water=clean_water
+        )
+        clean_crop = c_res["clean_crop"]
 
         # 组合全植被多边形掩膜
         clean_veg = np.zeros_like(clean_forest, dtype=np.uint8)
         clean_veg[clean_crop > 0] = 1
         clean_veg[clean_forest > 0] = 2
 
-        print(f"[+] 分级解译完毕: 森林与耕地重叠像元数为 0，完全解耦互斥！")
-
-        # ----------------- 3. 主干交通路网提取 (方案 B 极严断舍离：国家大动脉走廊) -----------------
-        print("[*] 阶段 3/3: 主干交通路网与走廊特征提取 (方案 B 极严断舍离：8方向滤波+骨架细化+主轴单向采样)...")
-        res_m = geo_meta.get("res", [30.0, 30.0])[0] if geo_meta else 30.0
-        raw_impervious = (mndwi < -0.01) & (ndvi < 0.25) & (ndbi > -0.05) & (clean_water == 0) & (clean_forest == 0)
-        bin_imp = (raw_impervious.astype(np.uint8)) * 255
-
-        clean_roads, road_features, total_road_km = self._extract_arterial_roads(
-            bin_imp=bin_imp,
-            geo_meta=geo_meta,
-            res_m=res_m,
-            min_extent_px=65,
-            min_aspect=2.2,
-            min_area_px=60,
-            min_road_len_km=1.5
+        # ----------------- 3. 主干交通路网提取 (RoadExtractor - 方案 B 极严断舍离) -----------------
+        r_res = RoadExtractor(min_road_len_km=1.5).extract(
+            tif_path, clean_water=clean_water, clean_forest=clean_forest
         )
+        clean_roads = r_res["clean_roads"]
+        road_features = r_res["road_features"]
+        total_road_km = r_res["total_road_km"]
         clean_crop[clean_roads > 0] = 0
         print(f"[+] 交通大动脉提取完毕: 成功锁定 {len(road_features)} 条国家/省级交通走廊，总里程 {total_road_km:.1f} km (彻底消除农田网格与发夹双线)！")
 
@@ -794,129 +762,12 @@ class IndustrialSegFormerEngine:
             "report_md": str(report_path)
         }
 
+    # -------------------------------------------------------------------------
+    # landuse_category 专属地物解译委托接口 (保持 100% 向后兼容)
+    # -------------------------------------------------------------------------
     def extract_water(self, image_path: str, min_area_pixels: int = 30) -> Dict[str, Any]:
-        """
-        水系专项高精度提取引擎 (v3.1 高保真河流走向贴合版)
-        采用 MNDWI 多光谱物理指数反演 + 近红外强吸收抑制 + 0.5~1.0px 受限容差控制，
-        保留 860+ 高精度拐角控制点，实现与卫星底图河道 1:1 完美走向贴合。
-        """
-        start_time = time.time()
-        vis_rgb, mndwi, ndvi, evi, savi, ndbi, nir, geo_meta = self.load_multispectral_data(image_path)
-        h, w = mndwi.shape
-        res_m = geo_meta.get("res", [30.0, 30.0])[0] if geo_meta else 30.0
-        pixel_area_m2 = float(res_m * res_m)
-
-        # 阶段 1: 水系高保真自适应提取
-        nir_p55 = np.percentile(nir[::8, ::8], 55)
-        raw_water = (mndwi > 0.06) & (nir < nir_p55) & (ndvi < 0.12)
-        
-        # 亚像元平滑
-        water_float = cv2.GaussianBlur(raw_water.astype(np.float32), (3, 3), 0.8)
-        water_binary = (water_float >= 0.45).astype(np.uint8)
-
-        # 极速 LUT 连通域过滤最小面积
-        num_w, labels_w, stats_w, _ = cv2.connectedComponentsWithStats(water_binary, connectivity=8)
-        lut_w = np.zeros(num_w, dtype=np.uint8)
-        lut_w[stats_w[:, cv2.CC_STAT_AREA] >= min_area_pixels] = 1
-        lut_w[0] = 0
-        clean_water = lut_w[labels_w]
-
-        # 填补水体假空洞
-        cnts_w, _ = cv2.findContours(clean_water, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(clean_water, cnts_w, -1, 1, -1)
-
-        # 阶段 2: 提取高保真走向水系多边形 (像元级受限容差 0.5~1.0 px)
-        cnts, hier = cv2.findContours(clean_water, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-        water_polygons = []
-        if hier is not None and len(cnts) > 0:
-            hier = hier[0]
-            poly_id = 1
-            for i, h_info in enumerate(hier):
-                if h_info[3] != -1:  # 内部空洞跳过
-                    continue
-                outer_cnt = cnts[i]
-                area_px = cv2.contourArea(outer_cnt)
-                if area_px < min_area_pixels:
-                    continue
-
-                L = cv2.arcLength(outer_cnt, True)
-                eps = min(1.0, max(0.5, 0.0001 * L))
-                approx = cv2.approxPolyDP(outer_cnt, eps, True).reshape(-1, 2)
-                if len(approx) < 3:
-                    continue
-                smooth = chaikin_smooth(approx, iterations=1)
-
-                pts_px = np.round(smooth).astype(np.int32)
-                x, y, bw, bh = cv2.boundingRect(outer_cnt)
-                M = cv2.moments(outer_cnt)
-                cx = M["m10"] / (M["m00"] + 1e-6)
-                cy = M["m01"] / (M["m00"] + 1e-6)
-
-                area_m2 = round(area_px * pixel_area_m2, 2)
-                area_km2 = round(area_m2 / 1e6, 4)
-                arc_len_m = round(L * res_m, 2)
-                compactness = round(4 * np.pi * (area_km2 * 1e6) / ((arc_len_m**2) + 1e-6), 3)
-
-                # 地理投影坐标
-                geo_polygon = []
-                geo_center = None
-                if geo_meta and geo_meta.get("transform"):
-                    for pt in smooth:
-                        gx, gy = rasterio_xy(geo_meta["transform"], float(pt[1]), float(pt[0]))
-                        geo_polygon.append([round(gx, 2), round(gy, 2)])
-                    if len(geo_polygon) > 0 and geo_polygon[0] != geo_polygon[-1]:
-                        geo_polygon.append(geo_polygon[0])
-                    cgx, cgy = rasterio_xy(geo_meta["transform"], cy, cx)
-                    geo_center = [round(cgx, 2), round(cgy, 2)]
-
-                # 水体形态分类
-                if compactness >= 0.18:
-                    water_type = "面状湖库/大型水库"
-                elif area_km2 >= 0.5:
-                    water_type = "线性河流水道/主干河流"
-                elif area_km2 >= 0.05:
-                    water_type = "中型水体/支流干渠"
-                else:
-                    water_type = "小型水体/坑塘水洼"
-
-                water_polygons.append({
-                    "id": poly_id,
-                    "type": water_type,
-                    "confidence": 0.98,
-                    "compactness": compactness,
-                    "area_pixels": float(area_px),
-                    "area_m2": area_m2,
-                    "area_km2": area_km2,
-                    "perimeter_pixels": round(L, 2),
-                    "bbox_pixel": [x, y, x + bw, y + bh],
-                    "center_pixel": [round(cx, 2), round(cy, 2)],
-                    "center_geo": geo_center,
-                    "polygon_pixel": pts_px.tolist(),
-                    "polygon_geo": geo_polygon
-                })
-                poly_id += 1
-
-        duration_ms = round((time.time() - start_time) * 1000, 2)
-        total_water_pixels = int(np.sum(clean_water))
-        total_img_pixels = float(h * w)
-        water_ratio_pct = round((total_water_pixels / total_img_pixels) * 100, 3)
-        total_water_km2 = round((total_water_pixels * pixel_area_m2) / 1e6, 3)
-
-        return {
-            "image_shape": [h, w, 3],
-            "is_multispectral": True,
-            "geo_meta": geo_meta,
-            "base_image": vis_rgb,
-            "water_mask": clean_water * 255,
-            "water_polygons": water_polygons,
-            "summary": {
-                "total_water_bodies": len(water_polygons),
-                "total_water_pixels": total_water_pixels,
-                "total_water_km2": total_water_km2,
-                "water_coverage_ratio_pct": water_ratio_pct,
-                "inference_time_ms": duration_ms
-            }
-        }
+        """水系专属高精度提取引擎 (委托至 landuse_category.WaterExtractor)"""
+        return WaterExtractor(min_area_pixels=min_area_pixels).extract(image_path)
 
     def export_all_water_results(
         self,
@@ -924,161 +775,12 @@ class IndustrialSegFormerEngine:
         output_dir: str = "outputs",
         prefix: str = "water"
     ) -> Dict[str, str]:
-        """
-        导出水系专属成果 (包含高保真渲染图、二值掩膜、GeoJSON、CSV与MD报告)
-        """
-        out_dir = Path(output_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        base_img = result["base_image"].copy()
-        water_mask = result["water_mask"]
-        polys = result["water_polygons"]
-        summary = result["summary"]
-        geo_meta = result.get("geo_meta")
-
-        # 1. 绘制高保真水系渲染大图
-        overlay = base_img.copy()
-        overlay[water_mask > 0] = [24, 144, 255]  # 道奇亮蓝
-        cv2.addWeighted(overlay, 0.45, base_img, 0.55, 0, base_img)
-
-        # 绘制金色岸线与标注
-        for p in polys:
-            pts = np.array(p["polygon_pixel"], dtype=np.int32).reshape((-1, 1, 2))
-            cv2.polylines(base_img, [pts], True, (255, 215, 0), 1, cv2.LINE_AA)
-            if p["area_km2"] >= 0.5 or p["id"] <= 5:
-                cx, cy = int(p["center_pixel"][0]), int(p["center_pixel"][1])
-                label = f"W#{p['id']} ({p['area_km2']}km2)"
-                cv2.putText(base_img, label, (cx - 20, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 2, cv2.LINE_AA)
-                cv2.putText(base_img, label, (cx - 20, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-
-        # 图例与标题
-        cv2.rectangle(base_img, (16, 16), (490, 52), (15, 23, 42), -1)
-        cv2.putText(base_img, f"Water AI Engine (v3.1 Aligned | {summary['total_water_bodies']} bodies | {summary['total_water_km2']} km2)", (24, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 230, 255), 1, cv2.LINE_AA)
-
-        vis_path = out_dir / f"{prefix}_annotated.png"
-        cv2.imwrite(str(vis_path), cv2.cvtColor(base_img, cv2.COLOR_RGB2BGR))
-
-        # 2. 导出二值掩膜
-        mask_path = out_dir / f"{prefix}_mask.png"
-        cv2.imwrite(str(mask_path), water_mask)
-
-        # 3. 导出 GeoJSON 空间矢量
-        geojson_path = out_dir / f"{prefix}_systems.geojson"
-        features = []
-        for p in polys:
-            coords = p.get("polygon_geo") if p.get("polygon_geo") else p.get("polygon_pixel")
-            if not coords or len(coords) < 3:
-                continue
-            features.append({
-                "type": "Feature",
-                "properties": {
-                    "water_id": p["id"],
-                    "category": "水系/河流湖库",
-                    "water_type": p["type"],
-                    "confidence": p["confidence"],
-                    "compactness": p.get("compactness", 0),
-                    "area_km2": p["area_km2"],
-                    "area_m2": p["area_m2"],
-                    "center_coordinate": p["center_geo"] or p["center_pixel"]
-                },
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [coords]
-                }
-            })
-        geojson_doc = {
-            "type": "FeatureCollection",
-            "crs": {"type": "name", "properties": {"name": geo_meta.get("crs", "EPSG:32650") if geo_meta else "PIXEL"}},
-            "features": features
-        }
-        with open(geojson_path, "w", encoding="utf-8") as f:
-            json.dump(geojson_doc, f, ensure_ascii=False, indent=2)
-
-        # 4. 导出 CSV
-        csv_path = out_dir / f"{prefix}_stats.csv"
-        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.writer(f)
-            writer.writerow(["水体编号", "地物类型", "水体形态分级", "置信度", "紧凑度", "面积(km²)", "面积(m²)", "像元数", "中心X/经度", "中心Y/纬度"])
-            for p in polys:
-                cg = p["center_geo"] or ["-", "-"]
-                writer.writerow([
-                    p["id"], "水系", p["type"], f"{p['confidence']:.2f}", p.get("compactness", "-"),
-                    p["area_km2"], p["area_m2"], int(p["area_pixels"]), cg[0], cg[1]
-                ])
-
-        # 5. 导出 Markdown 报告
-        report_path = out_dir / f"{prefix}_report.md"
-        report_lines = [
-            "# 遥感影像水系专属智能解译分析报告 (v3.1 高保真版)",
-            "",
-            "## 1. 监测区域水资源概况",
-            f"- **影像分辨率**: `{result['image_shape'][1]} x {result['image_shape'][0]}` 像素",
-            f"- **空间坐标系**: `{geo_meta.get('crs') if geo_meta else 'EPSG:32650'}`",
-            "- **解译算法引擎**: `多光谱物理指数增强引擎 (MNDWI + NIR吸收 + 0.5~1.0px容差河道1:1高保真贴合)`",
-            f"- **计算耗时**: `{summary['inference_time_ms']} ms`",
-            f"- **水系斑块总数**: `{summary['total_water_bodies']} 个`",
-            f"- **全区水域总面积**: `{summary['total_water_km2']} km²` ({summary['total_water_km2']*100:.1f} 公顷)",
-            f"- **地表水体覆盖率**: `{summary['water_coverage_ratio_pct']} %`",
-            "",
-            "## 2. 成果交付文件",
-            f"1. 空间矢量文件 (QGIS/ArcGIS 直接加载): `{geojson_path.name}`",
-            f"2. 水系高清渲染图 (岸线高保真贴合+金边高亮): `{vis_path.name}`",
-            f"3. 纯水体二值分类掩膜: `{mask_path.name}`",
-            f"4. 水资源明细数据统计表: `{csv_path.name}`",
-            ""
-        ]
-        with open(report_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(report_lines))
-
-        return {
-            "annotated_image": str(vis_path),
-            "water_mask": str(mask_path),
-            "geojson": str(geojson_path),
-            "csv": str(csv_path),
-            "report": str(report_path)
-        }
+        """导出水系专属全套成果"""
+        return WaterExtractor().export_deliverables(result, output_dir=output_dir, prefix=prefix)
 
     def extract_roads(self, image_path: str, min_len_km: float = 1.5) -> Dict[str, Any]:
-        """
-        主干交通路网与走廊专项提取引擎 (方案 B 极严断舍离：仅保留贯穿东西南北的真实国家大动脉)
-        8方向线型结构元开运算 + 空间密度滤波抑制农田垄沟 + 骨架细化 + PCA 主轴单向平滑采样。
-        100% 根除发夹回路与双线 bug，输出符合 GIS 规范的真 1-像素 LineString 空间矢量。
-        """
-        start_time = time.time()
-        vis_rgb, mndwi, ndvi, evi, savi, ndbi, nir, geo_meta = self.load_multispectral_data(image_path)
-        h, w = mndwi.shape
-        res_m = geo_meta.get("res", [30.0, 30.0])[0] if geo_meta else 30.0
-
-        # 1. 物理候选：低水、低植被、高不透水面
-        raw_impervious = (mndwi < -0.01) & (ndvi < 0.25) & (ndbi > -0.05)
-        bin_imp = (raw_impervious.astype(np.uint8)) * 255
-
-        # 2. 方案 B 极严大动脉提取
-        clean_roads, road_features, total_road_km = self._extract_arterial_roads(
-            bin_imp=bin_imp,
-            geo_meta=geo_meta,
-            res_m=res_m,
-            min_extent_px=65,
-            min_aspect=2.2,
-            min_area_px=60,
-            min_road_len_km=min_len_km
-        )
-
-        duration_ms = round((time.time() - start_time) * 1000, 2)
-        return {
-            "image_shape": [h, w, 3],
-            "is_multispectral": True,
-            "geo_meta": geo_meta,
-            "base_image": vis_rgb,
-            "road_mask": clean_roads * 255,
-            "road_features": road_features,
-            "summary": {
-                "total_roads": len(road_features),
-                "total_length_km": total_road_km,
-                "total_road_pixels": int(np.sum(clean_roads > 0)),
-                "inference_time_ms": duration_ms
-            }
-        }
+        """主干交通路网专项提取引擎 (委托至 landuse_category.RoadExtractor 方案 B)"""
+        return RoadExtractor(min_road_len_km=min_len_km).extract(image_path)
 
     def export_all_road_results(
         self,
@@ -1086,119 +788,42 @@ class IndustrialSegFormerEngine:
         output_dir: str = "outputs",
         prefix: str = "road"
     ) -> Dict[str, str]:
-        out_dir = Path(output_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        """导出大动脉路网专属全套成果"""
+        return RoadExtractor().export_deliverables(result, output_dir=output_dir, prefix=prefix)
 
-        base_img = result["base_image"].copy()
-        road_mask = result["road_mask"]
-        roads = result["road_features"]
-        summary = result["summary"]
-        geo_meta = result.get("geo_meta")
+    def extract_forest(self, image_path: str, water_mask: Optional[np.ndarray] = None, min_area_pixels: int = 80) -> Dict[str, Any]:
+        """稠密森林专属高精度提取引擎 (委托至 landuse_category.ForestExtractor)"""
+        return ForestExtractor(min_area_pixels=min_area_pixels).extract(image_path, water_mask=water_mask)
 
-        # 1. 绘制高清渲染图 (方案 B：黑色晕轮 + 琥珀金主干大动脉 + 里程标签)
-        for i, r in enumerate(roads):
-            pts = np.array(r["points_pixel"], dtype=np.int32).reshape((-1, 1, 2))
-            cv2.polylines(base_img, [pts], False, (0, 0, 0), 4, cv2.LINE_AA)
-            cv2.polylines(base_img, [pts], False, (255, 190, 0), 2, cv2.LINE_AA)
-            
-            p0 = pts[len(pts) // 2][0]
-            label = f"Trunk #{r['id']} ({r['length_km']}km)"
-            cv2.putText(base_img, label, (p0[0] - 22, p0[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 2, cv2.LINE_AA)
-            cv2.putText(base_img, label, (p0[0] - 22, p0[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 240, 150), 1, cv2.LINE_AA)
+    def export_all_forest_results(
+        self,
+        result: Dict[str, Any],
+        output_dir: str = "outputs",
+        prefix: str = "forest"
+    ) -> Dict[str, str]:
+        """导出森林专属全套成果"""
+        return ForestExtractor().export_deliverables(result, output_dir=output_dir, prefix=prefix)
 
-        # 标题图例卡片
-        cv2.rectangle(base_img, (16, 16), (620, 64), (15, 23, 42), -1)
-        cv2.rectangle(base_img, (16, 16), (620, 64), (56, 189, 248), 1)
-        cv2.putText(base_img, f"National Trunk Road Network (Option B | {summary['total_roads']} trunks | {summary['total_length_km']} km)", (28, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(base_img, "True 1-pixel centerlines - Pure single paths without loops or farm grid noise", (28, 56), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (148, 163, 184), 1, cv2.LINE_AA)
+    def extract_cropland(
+        self,
+        image_path: str,
+        clean_forest: Optional[np.ndarray] = None,
+        clean_water: Optional[np.ndarray] = None,
+        min_area_pixels: int = 120
+    ) -> Dict[str, Any]:
+        """农田耕地专属高精度提取引擎 (委托至 landuse_category.CroplandExtractor)"""
+        return CroplandExtractor(min_area_pixels=min_area_pixels).extract(
+            image_path, clean_forest=clean_forest, clean_water=clean_water
+        )
 
-        vis_path = out_dir / f"{prefix}_annotated.png"
-        cv2.imwrite(str(vis_path), cv2.cvtColor(base_img, cv2.COLOR_RGB2BGR))
-
-        # 2. 导出二值掩膜
-        mask_path = out_dir / f"{prefix}_mask.png"
-        cv2.imwrite(str(mask_path), road_mask)
-
-        # 3. 导出 GeoJSON (符合 GIS 规范的真单向 LineString)
-        geojson_path = out_dir / f"{prefix}_roads.geojson"
-        features = []
-        for r in roads:
-            coords = r.get("points_geo") if r.get("points_geo") else r.get("points_pixel")
-            if not coords or len(coords) < 2:
-                continue
-            features.append({
-                "type": "Feature",
-                "properties": {
-                    "id": r["id"],
-                    "road_id": r["id"],
-                    "name": f"Trunk Corridor #{r['id']}",
-                    "category": "交通网络/国家大动脉",
-                    "road_type": r["type"],
-                    "confidence": r["confidence"],
-                    "length_km": r["length_km"],
-                    "length_m": r["length_m"],
-                    "azimuth_deg": r["azimuth_deg"]
-                },
-                "geometry": {
-                    "type": "LineString",
-                    "coordinates": coords
-                }
-            })
-        geojson_doc = {
-            "type": "FeatureCollection",
-            "crs": {"type": "name", "properties": {"name": geo_meta.get("crs", "EPSG:32650") if geo_meta else "PIXEL"}},
-            "features": features
-        }
-        with open(geojson_path, "w", encoding="utf-8") as f:
-            json.dump(geojson_doc, f, ensure_ascii=False, indent=2)
-
-        # 4. 导出 CSV
-        csv_path = out_dir / f"{prefix}_stats.csv"
-        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.writer(f)
-            writer.writerow(["大动脉编号", "地物类型", "道路等级", "置信度", "里程长度(km)", "里程长度(m)", "主走向方位角(°)", "算法优化特性"])
-            for r in roads:
-                writer.writerow([
-                    r["id"], "国家大动脉", r["type"], f"{r['confidence']:.2f}",
-                    r["length_km"], r["length_m"], r["azimuth_deg"],
-                    "方案B极严断舍离+密度滤波排除农田+主轴中位数单像素骨架"
-                ])
-
-        # 5. 导出 MD 报告
-        report_path = out_dir / f"{prefix}_report.md"
-        report_lines = [
-            "# 遥感影像国家大动脉专属智能解译分析报告 (方案 B 极严断舍离版)",
-            "",
-            "## 1. 监测区域大动脉交通概况",
-            f"- **影像分辨率**: `{result['image_shape'][1]} x {result['image_shape'][0]}` 像素",
-            f"- **空间坐标系**: `{geo_meta.get('crs') if geo_meta else 'EPSG:32650'}`",
-            "- **解译算法引擎**: `方案 B 极严断舍离 (8方向线型滤波 + 空间密度抑制麦田网格 + PCA沿主轴单向采样)`",
-            f"- **计算耗时**: `{summary['inference_time_ms']} ms`",
-            f"- **提取骨干动脉数**: `{summary['total_roads']} 条`",
-            f"- **全区大动脉总里程**: `{summary['total_length_km']} km`",
-            "",
-            "## 2. 方案 B 核心质量攻坚成果",
-            "1. **彻底消除农田网格伪道路**：通过 2D 局部空间密度滤波，将密集农田灌渠、垄沟网格（密度>50）彻底剥离，绝无 1km 麦田边界误判；",
-            "2. **彻底解决发夹双线回路问题**：废除轮廓闭合矢量化，采用单像素骨架化 + SVD/PCA 沿主轴中位数投影采样，输出真正 1-像素宽度的单向 GIS LineString；",
-            "3. **凸显国家与省级运输大动脉**：全区仅保留贯穿东西南北的少数核心骨干通道，层次分明，制图效果清晰震撼。",
-            "",
-            "## 3. 成果交付文件",
-            f"1. 空间矢量文件 (QGIS/ArcGIS 直接加载 LineString): `{geojson_path.name}`",
-            f"2. 大动脉高清制图标注大图 (琥珀金单线+深色晕轮+里程标签): `{vis_path.name}`",
-            f"3. 纯大动脉二值分类掩膜: `{mask_path.name}`",
-            f"4. 大动脉详细属性数据统计表: `{csv_path.name}`",
-            ""
-        ]
-        with open(report_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(report_lines))
-
-        return {
-            "annotated_image": str(vis_path),
-            "road_mask": str(mask_path),
-            "geojson": str(geojson_path),
-            "csv": str(csv_path),
-            "report": str(report_path)
-        }
+    def export_all_cropland_results(
+        self,
+        result: Dict[str, Any],
+        output_dir: str = "outputs",
+        prefix: str = "cropland"
+    ) -> Dict[str, str]:
+        """导出农田专属全套成果"""
+        return CroplandExtractor().export_deliverables(result, output_dir=output_dir, prefix=prefix)
 
 
 # 全局兼容导出 (与 main.py 和历史版本完全对接)

@@ -26,6 +26,14 @@
 
 ```
 remoteSensing/
+├── landuse_category/           # 【大宗地物分类专属解译库】
+│   ├── base.py                 # 多光谱物理指数反演、矢量投影、Chaikin 平滑与多环镂空
+│   ├── water_extractor.py      # 水系/河流湖库高保真走向贴合提取器
+│   ├── forest_extractor.py     # 稠密森林/林地专属提取器 (EVI/NDVI/SAVI 抗饱和)
+│   ├── cropland_extractor.py   # 农田耕地专属提取器 (5x5 垄沟闭运算与空间硬互斥)
+│   ├── road_extractor.py       # 交通大动脉专属提取器 (方案 B 极严断舍离，0 发夹回路)
+│   ├── __init__.py             # 统一对外暴露提取器与工具接口
+│   └── README.md               # 模块技术说明与接口指南
 ├── rs_segformer_engine.py      # SegFormer + 多光谱物理融合全要素解译引擎 (河流/森林/农田/城镇)
 ├── rs_exporter.py              # 全要素多源成果导出模块 (QGIS 矢量、Mask、CSV、MD、图表)
 ├── main.py                     # 命令行 CLI 执行主入口
@@ -60,14 +68,28 @@ python main.py --segformer
 python main.py --target water
 ```
 
-### 3. 主干交通路网专项提取 (CLI)
+### 3. 主干交通路网专项提取 (CLI - 方案 B 极严断舍离)
 
 ```bash
 python main.py --target road
 ```
-*(仅需约 5 秒，即可输出贯穿全区数百公里高速公路与干线路网 LineString 矢量与掩膜！)*
+*(仅需约 5 秒，即可输出贯穿全区国家与省道干线交通大动脉 LineString 矢量与掩膜！)*
 
-### 4. 启动 Web 可视化交互平台
+### 4. 稠密森林林地专项提取 (CLI)
+
+```bash
+python main.py --target forest
+```
+*(采用 EVI/SAVI/NDVI 多指数协同抗冠层饱和，输出符合 GIS 规范的 Polygon 空间矢量！)*
+
+### 5. 农田耕地专属提取 (CLI)
+
+```bash
+python main.py --target cropland
+```
+*(5x5 垄沟闭运算微孔抑制，森林水系栅格级硬互斥，输出标准多环 Polygon 空间矢量！)*
+
+### 6. 启动 Web 可视化交互平台
 
 ```bash
 python app.py
