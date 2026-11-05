@@ -99,8 +99,8 @@ class RemoteSensingExporter:
         summary = detection_result.get("summary", {})
         total = summary.get("total_objects", len(detections))
         fps_info = f"Targets: {total} | Time: {summary.get('inference_time_ms', 0)}ms"
-        cv2.rectangle(vis_img, (10, 10), (320, 45), (20, 20, 20), -1)
-        cv2.putText(vis_img, "YOLO Remote Sensing AI", (16, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 230, 255), 1)
+        cv2.rectangle(vis_img, (10, 10), (360, 45), (20, 20, 20), -1)
+        cv2.putText(vis_img, "SegFormer Remote Sensing AI", (16, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 230, 255), 1)
         cv2.putText(vis_img, fps_info, (16, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 1)
 
         out_path = self.output_dir / output_filename
@@ -267,7 +267,7 @@ class RemoteSensingExporter:
         )
         ax2.set_title("地物覆盖面积比例 (Area Ratio)", fontsize=13, fontweight='bold', pad=12)
 
-        plt.suptitle(f"遥感影像 YOLO 地物智能解译统计 (总目标数: {summary.get('total_objects', 0)})", fontsize=15, y=0.98)
+        plt.suptitle(f"遥感影像 SegFormer 地物智能解译统计 (总目标数: {summary.get('total_objects', 0)})", fontsize=15, y=0.98)
         plt.tight_layout()
         plt.savefig(str(out_path), bbox_inches='tight')
         plt.close(fig)
@@ -283,7 +283,7 @@ class RemoteSensingExporter:
         geo_meta = detection_result.get("geo_meta")
 
         md_content = [
-            "# 遥感影像 YOLO 地物智能识别分析报告",
+            "# 遥感影像 SegFormer 地物智能识别分析报告",
             "",
             "## 1. 基础信息概述",
             f"- **影像分辨率**: `{detection_result['image_shape'][1]} x {detection_result['image_shape'][0]}` 像素",

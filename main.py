@@ -1,7 +1,14 @@
 """
-遥感影像 YOLO 地物识别主程序 CLI (Remote Sensing YOLO Main Runner)
+遥感影像 SegFormer 智能地物解译主程序 CLI (Remote Sensing SegFormer Land-Cover Runner)
 用法示例:
-    python main.py --source data/sample_rs.tif --model yolo11n.pt --slice --output outputs/
+    # 推荐：启动 SegFormer 多光谱物理融合全要素自然地物解译 (河流/森林/农田/城镇)
+    python main.py --segformer
+
+    # 水系专项高保真走向贴合提取与 QGIS 矢量导出
+    python main.py --source data/SDC30_V003_50SMF_20210618.tif --target water
+
+    # 自定义遥感影像解译
+    python main.py --source data/sample_rs.tif --output outputs/
 """
 
 import os
@@ -17,15 +24,14 @@ if sys.platform == "win32":
 
 from rs_detector import RemoteSensingDetector
 from rs_exporter import RemoteSensingExporter
-from rs_water_detector import WaterSystemDetector
-from rs_segformer_engine import MultispectralSegFormerEngine, run_segformer_pipeline
+from rs_segformer_engine import IndustrialSegFormerEngine, MultispectralSegFormerEngine, run_segformer_pipeline
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="遥感影像地物智能识别与全要素成果导出平台 (YOLO + SegFormer)")
+    parser = argparse.ArgumentParser(description="遥感影像 SegFormer 智能解译与全要素成果导出平台 (SegFormer + 多光谱融合)")
     parser.add_argument("--source", type=str, default="data/SDC30_V003_50SMF_20210618.tif", help="待解译遥感图像路径 (支持 .tif, .tiff, .png, .jpg)")
     parser.add_argument("--segformer", action="store_true", default=False, help="启动 SegFormer + 多光谱物理融合全要素解译引擎 (河流/植被/农田/城镇)")
-    parser.add_argument("--model", type=str, default="yolo11n.pt", help="YOLO 模型权重路径 (例如 yolo11n.pt, yolo11n-seg.pt)")
+    parser.add_argument("--model", type=str, default="yolo11n.pt", help="通用辅助模型权重路径 (例如 yolo11n.pt, yolo11n-seg.pt)")
     parser.add_argument("--conf", type=float, default=0.25, help="置信度阈值 (默认: 0.25)")
     parser.add_argument("--iou", type=float, default=0.45, help="NMS IoU 阈值 (默认: 0.45)")
     parser.add_argument("--slice", action="store_true", default=True, help="是否开启遥感大图切片滑窗推理 (适合超大分辨率影像)")
@@ -50,11 +56,11 @@ def process_image(img_path: Path, detector: RemoteSensingDetector, exporter: Rem
         print(f"[*] 空间参考 (CRS): {geo_meta['crs']}")
         print(f"[*] 地理范围 (Bounds): {geo_meta['bounds']}")
 
-    # 特别处理：水系专项高精度识别引擎
+    # 特别处理：水系专项高精度识别引擎 (v3.1 高保真走向贴合)
     if args.target and args.target.strip().lower() in ["water", "水体", "水系"]:
-        print(f"\n[*] 启动水系专项高精度识别引擎 (多光谱指数+抗阴影优化)...")
-        w_detector = WaterSystemDetector(min_area_pixels=30)
-        w_res = w_detector.extract_water(str(img_path))
+        print(f"\n[*] 启动水系专项高精度识别引擎 (多光谱指数+抗阴影优化+河道高保真走向贴合)...")
+        w_engine = IndustrialSegFormerEngine()
+        w_res = w_engine.extract_water(str(img_path), min_area_pixels=30)
         w_summary = w_res["summary"]
         
         print("\n------------------ 水系解译结果统计 ------------------")
@@ -65,7 +71,7 @@ def process_image(img_path: Path, detector: RemoteSensingDetector, exporter: Rem
         print("------------------------------------------------------")
         
         stem = f"{img_path.stem}_water"
-        artifacts = w_detector.export_all_water_results(w_res, output_dir=args.output, prefix=stem)
+        artifacts = w_engine.export_all_water_results(w_res, output_dir=args.output, prefix=stem)
         print("\n[OK] 水系专属解译成果已全部导出:")
         print(f"  1. 水系渲染标注图: {artifacts['annotated_image']}")
         print(f"  2. 二值水系掩膜 (Mask): {artifacts['water_mask']}")

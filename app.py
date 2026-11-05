@@ -1,5 +1,5 @@
 """
-遥感影像 YOLO 地物智能解译 Web 可视化平台 (FastAPI 后端)
+遥感影像 SegFormer 地物智能解译 Web 可视化平台 (FastAPI 后端)
 启动方式:
     python app.py
 访问地址:
@@ -25,9 +25,9 @@ if sys.platform == "win32":
 
 from rs_detector import RemoteSensingDetector
 from rs_exporter import RemoteSensingExporter
-from rs_water_detector import WaterSystemDetector
+from rs_segformer_engine import IndustrialSegFormerEngine
 
-app = FastAPI(title="Remote Sensing YOLO Land-Cover AI", version="1.0.0")
+app = FastAPI(title="Remote Sensing SegFormer Land-Cover AI", version="3.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -73,7 +73,7 @@ def read_root():
     index_file = STATIC_DIR / "index.html"
     if index_file.exists():
         return FileResponse(index_file)
-    return {"message": "遥感影像 YOLO 地物识别 API 服务已启动"}
+    return {"message": "遥感影像 SegFormer 地物识别 API 服务已启动"}
 
 
 @app.post("/api/detect")
@@ -123,10 +123,10 @@ async def detect_remote_sensing(
 
         # 如果用户指定提取水系 (启动水系专项高精度引擎)
         if target_cls in ["water", "水体", "水系"]:
-            w_detector = WaterSystemDetector(min_area_pixels=30)
-            w_res = w_detector.extract_water(str(file_path))
+            w_engine = IndustrialSegFormerEngine()
+            w_res = w_engine.extract_water(str(file_path), min_area_pixels=30)
             stem = f"water_{req_id}"
-            art_paths = w_detector.export_all_water_results(w_res, output_dir=str(OUTPUT_DIR), prefix=stem)
+            art_paths = w_engine.export_all_water_results(w_res, output_dir=str(OUTPUT_DIR), prefix=stem)
             
             # 格式化检测目标列表
             det_items = []
@@ -258,6 +258,6 @@ def list_samples():
 
 
 if __name__ == "__main__":
-    print("[*] 正在启动遥感影像 YOLO 地物识别 Web 服务...")
+    print("[*] 正在启动遥感影像 SegFormer 地物智能解译 Web 服务...")
     print("[*] 访问地址: http://127.0.0.1:8000")
     uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=False)

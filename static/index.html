@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>遥感影像 YOLO 地物智能解译系统</title>
+  <title>遥感影像 SegFormer 地物智能解译系统</title>
   <link rel="stylesheet" href="/static/style.css">
   <!-- Chart.js 用于前端图表渲染 -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -15,13 +15,13 @@
       <div class="logo-box">
         <div class="logo-icon">🛰️</div>
         <div>
-          <h1>遥感影像 YOLO 地物智能解译系统</h1>
+          <h1>遥感影像 SegFormer 地物智能解译系统</h1>
           <p class="subtitle">Remote Sensing Earth Observation & Feature Extraction Platform</p>
         </div>
       </div>
       <div class="header-status">
         <span class="status-tag status-online">● 服务就绪</span>
-        <span class="version-tag">YOLO11-RS v1.0</span>
+        <span class="version-tag">SegFormer-RS v3.1</span>
       </div>
     </header>
 
@@ -52,8 +52,9 @@
           <h3><span class="sec-icon">⚙️</span> 模型与推理参数</h3>
           
           <div class="form-group">
-            <label for="modelSelect">解译模型权重:</label>
+            <label for="modelSelect">解译模型引擎:</label>
             <select id="modelSelect">
+              <option value="segformer" selected>SegFormer 多光谱物理融合全要素引擎 (v3.1)</option>
               <option value="yolo11n.pt">YOLO11-RS 目标检测 (yolo11n.pt)</option>
               <option value="yolo11n-seg.pt">YOLO11-RS 实例分割 (yolo11n-seg.pt)</option>
             </select>

@@ -1,5 +1,5 @@
 """
-遥感影像 YOLO 地物识别核心模块 (Remote Sensing YOLO Feature Detector)
+遥感影像地物识别与切片推理模块 (Remote Sensing Feature Detector)
 支持遥感大图切片滑窗推理 (Sliced / Sliding Window Inference)、GeoTIFF 地理坐标映射、
 目标检测 (Object Detection) 与 实例分割 (Instance Segmentation)。
 """
