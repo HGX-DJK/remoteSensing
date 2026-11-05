@@ -1,3 +1,4 @@
 data/*
 outputs/*
-yolo*
+*.pt
+__pycache__/

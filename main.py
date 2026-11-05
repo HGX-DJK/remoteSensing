@@ -22,7 +22,7 @@ if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-from rs_detector import RemoteSensingDetector
+from yolo_detector import RemoteSensingDetector
 from rs_exporter import RemoteSensingExporter
 from rs_segformer_engine import IndustrialSegFormerEngine, MultispectralSegFormerEngine, run_segformer_pipeline
 

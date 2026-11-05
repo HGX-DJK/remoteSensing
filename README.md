@@ -26,11 +26,16 @@
 
 ```
 remoteSensing/
-├── rs_segformer_engine.py      # SegFormer + 多光谱物理融合 + GIS 矢量全要素解译引擎 (河流/植被/农田)
-├── rs_detector.py              # 遥感大图切片滑窗与地理坐标转换
-├── rs_exporter.py              # 全要素多源成果导出模块
+├── rs_segformer_engine.py      # SegFormer + 多光谱物理融合全要素解译引擎 (河流/森林/农田/城镇)
+├── rs_exporter.py              # 全要素多源成果导出模块 (QGIS 矢量、Mask、CSV、MD、图表)
 ├── main.py                     # 命令行 CLI 执行主入口
 ├── app.py                      # 交互式 Web 可视化服务 (FastAPI)
+├── yolo_detector/              # 【集中放置】离散人造物识别模块 (飞机/船只/车辆/储油罐/建筑)
+│   ├── rs_detector.py          # 切片滑窗推理与地理空间坐标映射核心
+│   ├── train_rs.py             # 针对遥感小目标与多角度特性的微调训练脚本
+│   ├── yolo11n.pt              # YOLO11 目标检测模型权重
+│   ├── yolo11n-seg.pt          # YOLO11 实例分割模型权重
+│   └── README.md               # 离散人造物模块使用说明
 ├── static/                     # Web 前端交互资源 (HTML / CSS / JS)
 ├── data/                       # 真实卫星数据目录
 │   └── SDC30_V003_50SMF_20210618.tif  # 真实 30米 多光谱卫星数据立方体 (3661x3661)

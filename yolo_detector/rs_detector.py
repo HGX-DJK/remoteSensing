@@ -48,10 +48,23 @@ class RemoteSensingDetector:
         self.iou_thres = iou_thres
         self.device = device
         
-        # 加载YOLO模型
-        print(f"[*] 正在加载 YOLO 识别模型: {model_path} (设备: {device})...")
-        self.model = YOLO(model_path)
-        self.is_segmentation = "seg" in str(model_path).lower()
+        # 解析并加载YOLO模型权重 (自动检索模块自身目录 yolo_detector/ 与工作区)
+        resolved_model_path = model_path
+        if not os.path.exists(resolved_model_path):
+            candidates = [
+                os.path.join(os.path.dirname(__file__), model_path),
+                os.path.join(os.path.dirname(__file__), Path(model_path).name),
+                os.path.join("yolo_detector", Path(model_path).name),
+                Path(model_path).name
+            ]
+            for cand in candidates:
+                if os.path.exists(cand):
+                    resolved_model_path = cand
+                    break
+
+        print(f"[*] 正在加载 YOLO 识别模型: {resolved_model_path} (设备: {device})...")
+        self.model = YOLO(resolved_model_path)
+        self.is_segmentation = "seg" in str(resolved_model_path).lower()
         
         # 加载类别配置
         self.categories = {}
