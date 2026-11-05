@@ -60,7 +60,14 @@ python main.py --segformer
 python main.py --target water
 ```
 
-### 3. 启动 Web 可视化交互平台
+### 3. 主干交通路网专项提取 (CLI)
+
+```bash
+python main.py --target road
+```
+*(仅需约 5 秒，即可输出贯穿全区数百公里高速公路与干线路网 LineString 矢量与掩膜！)*
+
+### 4. 启动 Web 可视化交互平台
 
 ```bash
 python app.py

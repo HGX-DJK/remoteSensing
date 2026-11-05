@@ -19,8 +19,8 @@ from pathlib import Path
 # 确保 UTF-8 标准输出
 if sys.platform == "win32":
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 
 from yolo_detector import RemoteSensingDetector
 from rs_exporter import RemoteSensingExporter
@@ -38,7 +38,7 @@ def parse_args():
     parser.add_argument("--tile-size", type=int, default=640, help="切片滑窗窗口尺寸 (默认: 640)")
     parser.add_argument("--overlap", type=float, default=0.20, help="切片重叠率 (默认: 0.20)")
     parser.add_argument("--device", type=str, default="cpu", help="计算设备 (cpu 或 cuda:0)")
-    parser.add_argument("--target", type=str, default="water", help="仅提取指定单一目标类别 (如: water/水系, airplane/飞机, ship/船只, vehicle 等, 默认: water)")
+    parser.add_argument("--target", type=str, default="water", help="仅提取指定单一目标类别 (如: water/水系, road/道路, airplane/飞机, ship/船只 等, 默认: water)")
     parser.add_argument("--output", type=str, default="outputs", help="结果成果导出目录")
     return parser.parse_args()
 
@@ -79,6 +79,29 @@ def process_image(img_path: Path, detector: RemoteSensingDetector, exporter: Rem
         print(f"  4. 水系斑块属性表 (CSV): {artifacts['csv']}")
         print(f"  5. 水资源分析报告: {artifacts['report']}")
         return w_res
+
+    # 特别处理：主干交通路网专项提取引擎
+    if args.target and args.target.strip().lower() in ["road", "roads", "道路", "路网", "公路"]:
+        print(f"\n[*] 启动主干交通路网专项提取引擎 (8方向线型结构元滤波+骨架细化)...")
+        r_engine = IndustrialSegFormerEngine()
+        r_res = r_engine.extract_roads(str(img_path), min_len_km=0.6)
+        r_summary = r_res["summary"]
+        
+        print("\n------------------ 主干路网解译结果统计 ------------------")
+        print(f"[*] 提取路网连续区段: {r_summary['total_roads']} 段")
+        print(f"[*] 全区路网总里程数: {r_summary['total_length_km']} km")
+        print(f"[*] 算法耗时: {r_summary['inference_time_ms']} ms")
+        print("----------------------------------------------------------")
+        
+        stem = f"{img_path.stem}_road"
+        artifacts = r_engine.export_all_road_results(r_res, output_dir=args.output, prefix=stem)
+        print("\n[OK] 主干路网专属解译成果已全部导出:")
+        print(f"  1. 路网渲染标注图: {artifacts['annotated_image']}")
+        print(f"  2. 二值路网掩膜 (Mask): {artifacts['road_mask']}")
+        print(f"  3. 路网空间矢量 (GeoJSON LineString): {artifacts['geojson']}")
+        print(f"  4. 道路属性统计表 (CSV): {artifacts['csv']}")
+        print(f"  5. 路网解译分析报告: {artifacts['report']}")
+        return r_res
 
     # 2. 执行常规目标推理 (切片滑窗 或 整图直推)
     if args.target:

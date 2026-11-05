@@ -174,6 +174,59 @@ async def detect_remote_sensing(
                 }
             }
 
+        # 如果用户指定提取路网 (启动主干路网专项引擎)
+        if target_cls in ["road", "roads", "道路", "路网", "公路"]:
+            r_engine = IndustrialSegFormerEngine()
+            r_res = r_engine.extract_roads(str(file_path), min_len_km=0.6)
+            stem = f"road_{req_id}"
+            art_paths = r_engine.export_all_road_results(r_res, output_dir=str(OUTPUT_DIR), prefix=stem)
+            
+            # 格式化道路检测要素列表
+            det_items = []
+            for rf in r_res["road_features"]:
+                det_items.append({
+                    "id": rf["id"],
+                    "class_name": "road",
+                    "class_name_zh": f"道路({rf['type']})",
+                    "confidence": rf["confidence"],
+                    "color": [255, 170, 0],
+                    "bbox": rf["bbox_pixel"],
+                    "length_km": rf["length_km"],
+                    "azimuth_deg": rf["azimuth_deg"]
+                })
+            
+            summary_info = {
+                "total_objects": r_res["summary"]["total_roads"],
+                "class_counts": {"主干道路": r_res["summary"]["total_roads"]},
+                "class_areas_pixel": {"主干道路": r_res["summary"]["total_road_pixels"]},
+                "class_area_percentages": {"主干道路": round(r_res["summary"]["total_length_km"], 2)},
+                "total_length_km": r_res["summary"]["total_length_km"],
+                "inference_time_ms": r_res["summary"]["inference_time_ms"]
+            }
+
+            return {
+                "success": True,
+                "request_id": req_id,
+                "image_info": {
+                    "filename": file_path.name,
+                    "width": r_res["image_shape"][1],
+                    "height": r_res["image_shape"][0],
+                    "channels": r_res["image_shape"][2],
+                    "has_georeference": r_res["geo_meta"] is not None,
+                    "crs": r_res["geo_meta"].get("crs") if r_res["geo_meta"] else None
+                },
+                "summary": summary_info,
+                "detections": det_items,
+                "artifacts": {
+                    "annotated_image": f"/outputs/{Path(art_paths['annotated_image']).name}",
+                    "geojson": f"/outputs/{Path(art_paths['geojson']).name}",
+                    "json": f"/outputs/{Path(art_paths['geojson']).name}",
+                    "csv": f"/outputs/{Path(art_paths['csv']).name}",
+                    "chart": f"/outputs/{Path(art_paths['annotated_image']).name}",
+                    "report": f"/outputs/{Path(art_paths['report']).name}"
+                }
+            }
+
         # 4. 执行通用目标推理
         if slice_inference and (w > tile_size or h > tile_size):
             results = detector.detect_sliced(
