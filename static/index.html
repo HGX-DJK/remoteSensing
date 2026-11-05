@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>遥感影像 YOLO 地物智能解译系统</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <!-- Chart.js 用于前端图表渲染 -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- 头部导航 -->
+    <header class="app-header">
+      <div class="logo-box">
+        <div class="logo-icon">🛰️</div>
+        <div>
+          <h1>遥感影像 YOLO 地物智能解译系统</h1>
+          <p class="subtitle">Remote Sensing Earth Observation & Feature Extraction Platform</p>
+        </div>
+      </div>
+      <div class="header-status">
+        <span class="status-tag status-online">● 服务就绪</span>
+        <span class="version-tag">YOLO11-RS v1.0</span>
+      </div>
+    </header>
+
+    <!-- 主工作区 -->
+    <main class="main-layout">
+      <!-- 左侧：参数配置与输入面板 -->
+      <aside class="control-panel">
+        <div class="panel-section">
+          <h3><span class="sec-icon">📁</span> 影像输入</h3>
+          
+          <div class="drop-zone" id="dropZone">
+            <input type="file" id="fileInput" accept=".tif,.tiff,.png,.jpg,.jpeg" style="display:none;">
+            <div class="drop-icon">⬆️</div>
+            <p>点击或拖拽遥感影像至此处</p>
+            <span class="hint">支持 GeoTIFF (.tif) 与普通图像 (.png, .jpg)</span>
+            <div id="selectedFileName" class="selected-file-badge" style="display:none;"></div>
+          </div>
+
+          <div class="sample-select-box">
+            <label>当前待解译遥感卫星数据:</label>
+            <select id="sampleSelect">
+              <option value="SDC30_V003_50SMF_20210618.tif" selected>SDC30_V003_50SMF_20210618.tif (全球30米数据立方体 3661x3661 UTM)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <h3><span class="sec-icon">⚙️</span> 模型与推理参数</h3>
+          
+          <div class="form-group">
+            <label for="modelSelect">解译模型权重:</label>
+            <select id="modelSelect">
+              <option value="yolo11n.pt">YOLO11-RS 目标检测 (yolo11n.pt)</option>
+              <option value="yolo11n-seg.pt">YOLO11-RS 实例分割 (yolo11n-seg.pt)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="targetClassSelect">🎯 目标类别专注提取 (单类别筛选):</label>
+            <select id="targetClassSelect">
+              <option value="water" selected>🌊 仅识别: 水系/水体 (高精度物理指数)</option>
+              <option value="all">全量检测 (不限类别)</option>
+              <option value="airplane">仅识别: 飞机 (airplane)</option>
+              <option value="ship">仅识别: 船只/舰船 (ship)</option>
+              <option value="storage_tank">仅识别: 储油罐 (storage_tank)</option>
+              <option value="building">仅识别: 建筑物 (building)</option>
+              <option value="vehicle">仅识别: 车辆 (vehicle)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <div class="label-row">
+              <label for="confThres">置信度阈值 (Confidence):</label>
+              <span id="confVal" class="val-badge">0.25</span>
+            </div>
+            <input type="range" id="confThres" min="0.05" max="0.95" step="0.05" value="0.25">
+          </div>
+
+          <div class="form-group">
+            <div class="label-row">
+              <label for="iouThres">重叠抑制 (IoU NMS):</label>
+              <span id="iouVal" class="val-badge">0.45</span>
+            </div>
+            <input type="range" id="iouThres" min="0.10" max="0.90" step="0.05" value="0.45">
+          </div>
+
+          <div class="form-group toggle-group">
+            <label class="toggle-label">
+              <input type="checkbox" id="sliceToggle" checked>
+              <span class="toggle-switch"></span>
+              开启大切片滑窗推理 (Sliced Inference)
+            </label>
+          </div>
+
+          <div id="sliceParams" class="sub-params">
+            <div class="form-group">
+              <label for="tileSize">切片窗口尺寸 (px):</label>
+              <select id="tileSize">
+                <option value="640" selected>640 x 640</option>
+                <option value="1024">1024 x 1024</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="overlapRatio">切片重叠率 (Overlap):</label>
+              <select id="overlapRatio">
+                <option value="0.10">10%</option>
+                <option value="0.20" selected>20% (推荐)</option>
+                <option value="0.30">30%</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <button id="runBtn" class="btn-primary">
+          <span class="btn-icon">⚡</span> 开始智能解译识别
+        </button>
+      </aside>
+
+      <!-- 中间：可视化对比展示区 -->
+      <section class="display-panel">
+        <div class="display-header">
+          <div class="view-tabs">
+            <button class="tab-btn active" data-view="split">对比视图</button>
+            <button class="tab-btn" data-view="result">识别成果图</button>
+            <button class="tab-btn" data-view="original">原始影像</button>
+          </div>
+          <div class="image-meta-info" id="imageMetaBar">
+            分辨率: 3661 x 3661 | CRS: EPSG:32650 (WGS 84 / UTM zone 50N)
+          </div>
+        </div>
+
+        <div class="viewport" id="viewport">
+          <div class="image-stage split-mode" id="imageStage">
+            <div class="canvas-card" id="cardOriginal">
+              <div class="card-tag">多光谱卫星真彩色底图</div>
+              <img id="imgOriginal" src="/outputs/SDC30_V003_50SMF_20210618_water_annotated.png" alt="原始影像">
+            </div>
+            <div class="canvas-card" id="cardResult">
+              <div class="card-tag tag-ai">AI 高精度水系识别成果</div>
+              <img id="imgResult" src="/outputs/SDC30_V003_50SMF_20210618_water_annotated.png" alt="识别成果">
+            </div>
+          </div>
+          <div class="loading-overlay" id="loadingOverlay" style="display:none;">
+            <div class="spinner"></div>
+            <p id="loadingText">AI 正在深度切片解译中，请稍候...</p>
+          </div>
+        </div>
+
+        <!-- 成果导出与下载栏 -->
+        <div class="export-toolbar" id="exportToolbar">
+          <span class="export-title">成果一键导出:</span>
+          <div class="export-buttons">
+            <a id="btnDlImg" class="btn-export" href="/outputs/SDC30_V003_50SMF_20210618_water_annotated.png" download>
+              🖼️ 水系渲染大图
+            </a>
+            <a id="btnDlMask" class="btn-export" href="/outputs/SDC30_V003_50SMF_20210618_water_mask.png" download>
+              ⬛ 二值水体掩膜 (Mask)
+            </a>
+            <a id="btnDlGeoJson" class="btn-export" href="/outputs/SDC30_V003_50SMF_20210618_water_systems.geojson" download>
+              🌐 空间 GeoJSON (QGIS专用)
+            </a>
+            <a id="btnDlCsv" class="btn-export" href="/outputs/SDC30_V003_50SMF_20210618_water_stats.csv" download>
+              📊 水系斑块统计表 (CSV)
+            </a>
+            <a id="btnDlReport" class="btn-export" href="/outputs/SDC30_V003_50SMF_20210618_water_report.md" download>
+              📄 水资源分析报告 (MD)
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <!-- 右侧：数据报表与清单面板 -->
+      <aside class="stats-panel">
+        <div class="stats-card">
+          <h4>水资源监测概览指标</h4>
+          <div class="metrics-grid">
+            <div class="metric-box">
+              <div class="metric-num" id="totalTargets">75</div>
+              <div class="metric-label">水系斑块总数 (个)</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-num" id="inferTime">90.64</div>
+              <div class="metric-label">水域总面积 (km²)</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="stats-card">
+          <h4>地表覆盖比例</h4>
+          <div class="chart-wrapper">
+            <canvas id="categoryChart"></canvas>
+          </div>
+        </div>
+
+        <div class="stats-card table-card">
+          <h4>识别水体要素明细清单</h4>
+          <div class="table-container">
+            <table class="result-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>类型</th>
+                  <th>等级</th>
+                  <th>面积(km²)</th>
+                  <th>UTM坐标 (X, Y)</th>
+                </tr>
+              </thead>
+              <tbody id="targetTableBody">
+                <tr>
+                  <td>1</td>
+                  <td><span class="badge" style="background:#1e90ff;">水系</span></td>
+                  <td>中型水体/河流干流</td>
+                  <td>0.108</td>
+                  <td>509459, 3990406</td>
+                </tr>
+                <tr>
+                  <td>2</td>
+                  <td><span class="badge" style="background:#00bfff;">水系</span></td>
+                  <td>大型湖泊/水库</td>
+                  <td>6.462</td>
+                  <td>428188, 3991419</td>
+                </tr>
+                <tr>
+                  <td>3</td>
+                  <td><span class="badge" style="background:#1e90ff;">水系</span></td>
+                  <td>小型水体/支流干渠</td>
+                  <td>0.053</td>
+                  <td>503671, 3995025</td>
+                </tr>
+                <tr>
+                  <td>4</td>
+                  <td><span class="badge" style="background:#00bfff;">水系</span></td>
+                  <td>大型湖泊/水库</td>
+                  <td>1.160</td>
+                  <td>414134, 3994905</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
