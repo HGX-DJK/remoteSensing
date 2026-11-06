@@ -94,7 +94,7 @@ def process_image(img_path: Path, detector: RemoteSensingDetector, exporter: Rem
     if args.target and args.target.strip().lower() in ["road", "roads", "道路", "路网", "公路"]:
         print(f"\n[*] 启动主干交通路网专项提取引擎 (8方向线型结构元滤波+骨架细化)...")
         r_engine = IndustrialSegFormerEngine()
-        r_res = r_engine.extract_roads(str(img_path), min_len_km=0.6)
+        r_res = r_engine.extract_roads(str(img_path), min_len_km=2.5)
         r_summary = r_res["summary"]
         
         print("\n------------------ 主干路网解译结果统计 ------------------")

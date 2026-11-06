@@ -307,7 +307,7 @@ async def detect_remote_sensing(
         # 如果用户指定提取路网 (启动主干路网专项引擎)
         if target_cls in ["road", "roads", "道路", "路网", "公路"]:
             r_engine = IndustrialSegFormerEngine()
-            r_res = r_engine.extract_roads(str(file_path), min_len_km=0.6)
+            r_res = r_engine.extract_roads(str(file_path), min_len_km=2.5)
             stem = f"road_{req_id}"
             art_paths = r_engine.export_all_road_results(r_res, output_dir=str(OUTPUT_DIR), prefix=stem)
             

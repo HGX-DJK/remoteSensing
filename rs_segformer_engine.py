@@ -354,7 +354,7 @@ class IndustrialSegFormerEngine:
         clean_veg[clean_forest > 0] = 2
 
         # ----------------- 3. 主干交通路网提取 (RoadExtractor - 方案 B 极严断舍离) -----------------
-        r_res = RoadExtractor(min_road_len_km=1.5).extract(
+        r_res = RoadExtractor(min_road_len_km=2.5).extract(
             tif_path, clean_water=clean_water, clean_forest=clean_forest
         )
         clean_roads = r_res["clean_roads"]
@@ -778,7 +778,7 @@ class IndustrialSegFormerEngine:
         """导出水系专属全套成果"""
         return WaterExtractor().export_deliverables(result, output_dir=output_dir, prefix=prefix)
 
-    def extract_roads(self, image_path: str, min_len_km: float = 1.5) -> Dict[str, Any]:
+    def extract_roads(self, image_path: str, min_len_km: float = 2.5) -> Dict[str, Any]:
         """主干交通路网专项提取引擎 (委托至 landuse_category.RoadExtractor 方案 B)"""
         return RoadExtractor(min_road_len_km=min_len_km).extract(image_path)
 
